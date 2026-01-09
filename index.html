@@ -3,154 +3,178 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Super Debug 3D</title>
+    <title>3D Face Track Final</title>
     <style>
-        body { background: #111; color: white; font-family: monospace; margin: 0; padding: 20px; }
+        body { background: #111; color: white; font-family: monospace; margin: 0; padding: 20px; overflow: hidden; }
         #console-log {
             background: #000; border: 1px solid #333; padding: 10px;
-            height: 200px; overflow-y: scroll; font-size: 12px; margin-bottom: 20px;
+            height: 150px; overflow-y: scroll; font-size: 11px; margin-bottom: 20px;
+            position: absolute; top: 10px; left: 10px; width: 80%; z-index: 100; opacity: 0.8;
         }
         button {
-            background: #00ffcc; border: none; padding: 15px 30px; 
-            font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; width: 100%;
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            background: #00ffcc; border: none; padding: 15px 40px; 
+            font-size: 16px; font-weight: bold; border-radius: 50px; cursor: pointer; z-index: 101;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.5);
         }
         #output_canvas {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1;
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
         }
-        video { opacity: 0; position: absolute; width: 1px; height: 1px; }
+        video { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
     </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
-    <h3>Console di Debug</h3>
     <div id="console-log">In attesa...</div>
-    <button id="start-btn">AVVIA FOTOCAMERA</button>
-    <p>Se non vedi nulla dopo il click, controlla le impostazioni privacy del browser.</p>
-
+    <button id="start-btn">AVVIA ESPERIENZA</button>
+    
     <canvas id="output_canvas"></canvas>
     <video id="input_video" playsinline muted autoplay></video>
 
     <script>
         const logBox = document.getElementById('console-log');
         function log(msg) {
-            const time = new Date().toLocaleTimeString();
+            const time = new Date().toLocaleTimeString().split(' ')[0];
             logBox.innerHTML += `<div>[${time}] ${msg}</div>`;
             logBox.scrollTop = logBox.scrollHeight;
         }
-
-        window.onerror = function (msg, url, lineNo, columnNo, error) {
-            log(`❌ ERRORE GLOBALE: ${msg} (Riga: ${lineNo})`);
-            return false;
-        };
-
-        log("ℹ️ Pagina caricata. Controllo supporto browser...");
-
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            log("❌ ERRORE CRITICO: navigator.mediaDevices non supportato! Sei su HTTPS?");
-            document.getElementById('start-btn').disabled = true;
-            document.getElementById('start-btn').innerText = "BROWSER NON SUPPORTATO";
-        } else {
-            log("✅ Supporto API Camera rilevato.");
-        }
+        window.onerror = function (msg) { log(`❌ ERROR: ${msg}`); return false; };
     </script>
 
     <script type="module">
-        log("ℹ️ Inizio caricamento moduli Three/MediaPipe...");
-        
+        log("ℹ️ Inizio inizializzazione...");
+
         import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-        import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/+esm';
 
-        log("✅ Moduli caricati con successo.");
-
-        // --- Variabili ---
+        // Variabili Globali
         let targetX = 0, targetY = 0;
         const videoElement = document.getElementById('input_video');
         const startBtn = document.getElementById('start-btn');
-        let faceMesh;
+        let cameraFeed = null;
 
-        // --- Setup Three.js ---
+        // --- SETUP THREE.JS (Grafica) ---
         const canvas = document.getElementById('output_canvas');
-        const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true });
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.z = 5;
-        
-        const geometry = new THREE.IcosahedronGeometry(1, 1);
-        const material = new THREE.MeshNormalMaterial({ wireframe: true });
-        const cube = new THREE.Mesh(geometry, material);
-        scene.add(cube);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
+        const scene = new THREE.Scene();
+        
+        // Luci
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const pointLight = new THREE.PointLight(0x00ffcc, 50);
+        pointLight.position.set(0, 0, 5);
+        scene.add(pointLight);
+
+        // Oggetto: Icosaedro Wireframe
+        const geometry = new THREE.IcosahedronGeometry(1.2, 0);
+        const material = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.1, metalness: 0.8 });
+        const obj = new THREE.Mesh(geometry, material);
+        
+        const wireGeo = new THREE.IcosahedronGeometry(2, 1);
+        const wireMat = new THREE.LineBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.5 });
+        const wireframe = new THREE.LineSegments(new THREE.WireframeGeometry(wireGeo), wireMat);
+        
+        const group = new THREE.Group();
+        group.add(obj);
+        group.add(wireframe);
+        scene.add(group);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 8;
+
+        // Loop di rendering
         function animate() {
             requestAnimationFrame(animate);
+            
+            // Movimento fluido camera (Lerp)
             camera.position.x += (targetX - camera.position.x) * 0.1;
             camera.position.y += (targetY - camera.position.y) * 0.1;
-            camera.lookAt(0,0,0);
-            cube.rotation.y += 0.01;
+            camera.lookAt(0, 0, 0);
+
+            // Rotazione oggetto
+            group.rotation.y += 0.005;
+            group.rotation.z += 0.002;
+            
             renderer.render(scene, camera);
         }
         animate();
-        log("✅ Rendering 3D avviato.");
+        log("✅ Grafica 3D pronta.");
 
-        // --- Setup MediaPipe ---
-        try {
-            faceMesh = new FaceMesh({locateFile: (file) => 
-                `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
-            
-            faceMesh.setOptions({
-                maxNumFaces: 1,
-                refineLandmarks: true,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            });
-
-            faceMesh.onResults((results) => {
-                if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-                    const nose = results.multiFaceLandmarks[0][1];
-                    targetX = -(nose.x - 0.5) * 5; 
-                    targetY = -(nose.y - 0.5) * 5;
-                }
-            });
-            log("✅ MediaPipe configurato.");
-        } catch(e) {
-            log("❌ Errore config MediaPipe: " + e.message);
+        // --- SETUP MEDIAPIPE (Visione) ---
+        // Nota: Qui usiamo 'window.FaceMesh' perché l'abbiamo caricato con <script src>
+        if (!window.FaceMesh) {
+            log("❌ ERRORE CRITICO: FaceMesh non caricato. Controlla connessione.");
         }
 
-        // --- Gestione Bottone ---
-        startBtn.addEventListener('click', async () => {
-            log("🔄 Pulsante premuto. Richiesta stream...");
-            
-            try {
-                // Tenta prima la cam frontale, poi qualsiasi cam
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user', width: 640, height: 480 },
-                    audio: false
+        const faceMesh = new window.FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults((results) => {
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const nose = results.multiFaceLandmarks[0][1];
+                // Calcolo movimento inverso
+                let x = nose.x - 0.5;
+                let y = nose.y - 0.5;
+                
+                // Sensibilità aumentata per mobile
+                targetX = -x * 8; 
+                targetY = -y * 8;
+            }
+        });
+        log("✅ Intelligenza Artificiale configurata.");
+
+        // --- AVVIO AL CLICK ---
+        startBtn.addEventListener('click', () => {
+            log("🔄 Richiesta fotocamera...");
+            startBtn.disabled = true;
+            startBtn.innerText = "CARICAMENTO...";
+
+            if (window.Camera) {
+                cameraFeed = new window.Camera(videoElement, {
+                    onFrame: async () => {
+                        await faceMesh.send({image: videoElement});
+                    },
+                    width: 480, // Risoluzione leggera per mobile
+                    height: 640,
+                    facingMode: 'user' // Forza fotocamera frontale
                 });
 
-                log("✅ Stream ottenuto! Collegamento al video...");
-                videoElement.srcObject = stream;
-                
-                videoElement.onloadeddata = () => {
-                    log("✅ Video caricato. Avvio analisi...");
-                    startBtn.style.display = 'none'; // Nascondi bottone
-                    processVideo();
-                };
-
-            } catch (err) {
-                log(`❌ ERRORE CAMERA: ${err.name}`);
-                log(`Dettaglio: ${err.message}`);
-                if (err.name === 'NotAllowedError') {
-                    alert("HAI NEGATO IL PERMESSO! Devi resettare i permessi del sito nelle impostazioni del browser.");
-                }
+                cameraFeed.start()
+                    .then(() => {
+                        log("✅ Camera avviata! Muovi la testa.");
+                        startBtn.style.display = 'none';
+                        document.getElementById('console-log').style.display = 'none'; // Nascondi log se tutto ok
+                    })
+                    .catch(err => {
+                        log("❌ ERRORE CAMERA: " + err.message);
+                        startBtn.innerText = "RIPROVA";
+                        startBtn.disabled = false;
+                        alert("Assicurati di non avere altre app che usano la camera e di essere su HTTPS.");
+                    });
+            } else {
+                log("❌ Errore: Camera Utils non trovato.");
             }
         });
 
-        async function processVideo() {
-            if (!videoElement.paused && !videoElement.ended) {
-                await faceMesh.send({image: videoElement});
-                requestAnimationFrame(processVideo);
-            }
-        }
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
 
     </script>
 </body>
