@@ -2,143 +2,90 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>3D Face Track Mobile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Face Track Debug</title>
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            background-color: #000; 
-            font-family: sans-serif;
-            touch-action: none; /* Previene lo scroll su mobile */
-        }
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
+        #output_canvas { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
         
-        #output_canvas {
-            position: absolute;
-            top: 0; left: 0;
-            width: 100vw; height: 100vh;
-            z-index: 1;
+        /* Video nascosto ma presente nel DOM per il processing */
+        #input_video {
+            position: absolute; bottom: 0; right: 0; width: 1px; height: 1px; opacity: 0; z-index: -1;
         }
 
-        /* Video nascosto per il debug */
-        .debug-container {
-            position: absolute;
-            bottom: 10px; right: 10px;
-            width: 100px; height: 133px; /* Aspect ratio portrait */
-            z-index: 2;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-radius: 8px;
-            overflow: hidden;
-            opacity: 0.6;
-            pointer-events: none;
-        }
-        #input_video {
-            width: 100%; height: 100%;
-            transform: scaleX(-1);
-            object-fit: cover;
-        }
-        
-        /* Overlay per il pulsante di avvio */
         #start-overlay {
-            position: absolute; top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
-            z-index: 99;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            text-align: center;
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(10,10,10,0.95); z-index: 99;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: white; text-align: center; padding: 20px; box-sizing: border-box;
         }
         
         button {
-            padding: 15px 30px;
-            font-size: 1.2rem;
-            background: #00ffcc;
-            border: none;
-            border-radius: 50px;
-            cursor: pointer;
-            color: #000;
-            font-weight: bold;
-            margin-top: 20px;
+            padding: 20px 40px; font-size: 1.2rem; background: #00ffcc; border: none;
+            border-radius: 50px; color: #000; font-weight: bold; margin-top: 30px;
+        }
+
+        #error-log {
+            margin-top: 20px; color: #ff5555; font-size: 0.9rem; max-width: 90%; word-wrap: break-word;
         }
     </style>
 </head>
 <body>
 
     <div id="start-overlay">
-        <h1>Tracking Facciale 3D</h1>
-        <p>Muovi la testa per guardare dentro il cubo.</p>
-        <button id="start-btn">AVVIA FOTOCAMERA</button>
-        <p style="font-size: 0.8rem; margin-top: 10px; opacity: 0.7;">Richiede permessi webcam</p>
+        <h2>Tracking Facciale 3D</h2>
+        <p>1. Assicurati di essere su HTTPS o Localhost.<br>2. Premi Avvia e consenti l'accesso.</p>
+        <button id="start-btn">AVVIA CAMERA</button>
+        <div id="error-log"></div>
     </div>
 
     <canvas id="output_canvas"></canvas>
-
-    <div class="debug-container">
-        <video id="input_video" playsinline muted autoplay></video>
-    </div>
+    <video id="input_video" playsinline muted autoplay></video>
 
     <script type="module">
         import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
         import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/+esm';
-        import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432244/+esm';
 
-        // --- Configurazione Mobile ---
-        const SENSITIVITY_X = 8.0; // Più sensibile su mobile
-        const SENSITIVITY_Y = 5.0;
-        
-        // --- Setup Three.js ---
+        // --- Variabili di stato ---
+        let targetX = 0, targetY = 0;
+        const videoElement = document.getElementById('input_video');
+        const errorLog = document.getElementById('error-log');
+        let isVideoReady = false;
+
+        // --- 1. Setup Three.js (Il mondo 3D) ---
         const canvas = document.getElementById('output_canvas');
-        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Ottimizzazione performance
-
+        
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x111111);
-        
-        // Luci
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        scene.add(ambientLight);
-        const pointLight = new THREE.PointLight(0x00ffcc, 40);
-        pointLight.position.set(2, 2, 5);
-        scene.add(pointLight);
+        // Luce soffusa
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        const pLight = new THREE.PointLight(0x00ffcc, 50);
+        pLight.position.set(0, 0, 5);
+        scene.add(pLight);
 
-        // Oggetto 3D
-        const geometry = new THREE.IcosahedronGeometry(1.5, 0);
-        const material = new THREE.MeshStandardMaterial({ 
-            color: 0x222222, roughness: 0.2, metalness: 0.9, wireframe: false 
-        });
-        const mainObj = new THREE.Mesh(geometry, material);
+        // Cubo centrale
+        const boxGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+        const boxMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.1 });
+        const cube = new THREE.Mesh(boxGeo, boxMat);
         
-        const wireGeo = new THREE.IcosahedronGeometry(2.5, 1);
-        const wireMat = new THREE.LineBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.3 });
+        // Wireframe esterno
+        const wireGeo = new THREE.BoxGeometry(2.5, 2.5, 2.5);
+        const wireMat = new THREE.LineBasicMaterial({ color: 0xff0055 });
         const wireframe = new THREE.LineSegments(new THREE.WireframeGeometry(wireGeo), wireMat);
-        
+
         const group = new THREE.Group();
-        group.add(mainObj);
+        group.add(cube);
         group.add(wireframe);
         scene.add(group);
 
-        // Griglia di sfondo per riferimento profondità
-        const grid = new THREE.GridHelper(30, 30, 0x444444, 0x111111);
-        grid.rotation.x = Math.PI / 2; // Griglia verticale dietro
-        grid.position.z = -10;
-        scene.add(grid);
-
         const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.z = 10;
+        camera.position.z = 8;
 
-        // --- Tracking Logic ---
-        let targetX = 0;
-        let targetY = 0;
-        const videoElement = document.getElementById('input_video');
-
-        // Inizializzazione MediaPipe
+        // --- 2. Setup MediaPipe ---
         const faceMesh = new FaceMesh({locateFile: (file) => 
             `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
-            
+        
         faceMesh.setOptions({
             maxNumFaces: 1,
             refineLandmarks: true,
@@ -149,65 +96,80 @@
         faceMesh.onResults((results) => {
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
                 const nose = results.multiFaceLandmarks[0][1];
-                
-                // Calcolo posizione (invertita per effetto specchio naturale)
-                let x = (nose.x - 0.5); 
-                let y = (nose.y - 0.5);
-
-                targetX = -x * SENSITIVITY_X; 
-                targetY = -y * SENSITIVITY_Y;
+                // Invertiamo X per effetto specchio, Sensitivity 6x
+                targetX = -(nose.x - 0.5) * 6; 
+                targetY = -(nose.y - 0.5) * 6;
             }
         });
 
-        // --- Gestione Avvio (Importante per iOS/Android) ---
-        const startBtn = document.getElementById('start-btn');
-        const overlay = document.getElementById('start-overlay');
-
-        startBtn.addEventListener('click', async () => {
-            startBtn.innerText = "Caricamento...";
-            
-            // Setup Camera Utils con facingMode 'user'
-            const cameraFeed = new Camera(videoElement, {
-                onFrame: async () => {
-                    await faceMesh.send({image: videoElement});
-                },
-                width: 480,  // Risoluzione ridotta per performance mobile
-                height: 640,
-                facingMode: 'user' // <--- QUESTA È LA CHIAVE PER LA CAM FRONTALE
-            });
-
+        // --- 3. Gestione Camera Nativa (Più robusta) ---
+        async function startCamera() {
             try {
-                await cameraFeed.start();
-                overlay.style.display = 'none'; // Nascondi overlay solo se ha successo
-            } catch (e) {
-                alert("Errore accesso fotocamera: " + e.message);
-                startBtn.innerText = "Riprova";
-            }
-        });
+                errorLog.innerText = "Richiesta permessi in corso...";
+                
+                // Richiesta generica, lasciamo decidere al browser la risoluzione
+                const constraints = { 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 640 }, // Non obbligatorio
+                        height: { ideal: 480 } // Non obbligatorio
+                    }, 
+                    audio: false 
+                };
 
-        // --- Loop Animazione ---
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = stream;
+                
+                // Aspettiamo che il video sia effettivamente partito
+                videoElement.onloadeddata = () => {
+                    isVideoReady = true;
+                    document.getElementById('start-overlay').style.display = 'none';
+                    processVideo(); // Avvia il loop di analisi
+                };
+
+            } catch (err) {
+                console.error(err);
+                // Questo mostrerà l'errore specifico a video
+                errorLog.innerHTML = `<strong>ERRORE:</strong> ${err.name}<br>${err.message}<br><br>
+                <em>Se dice "NotAllowed" o "InsecureContext", devi usare HTTPS.</em>`;
+            }
+        }
+
+        // --- 4. Loop di Analisi (Sostituisce Camera Utils) ---
+        async function processVideo() {
+            if (isVideoReady) {
+                await faceMesh.send({image: videoElement});
+            }
+            // Richiamiamo il prossimo frame video
+            if (!videoElement.paused && !videoElement.ended) {
+                requestAnimationFrame(processVideo);
+            }
+        }
+
+        // --- 5. Loop Grafico (Rendering) ---
         function animate() {
             requestAnimationFrame(animate);
-
-            // Interpolazione fluida (Lerp)
+            // Lerp per movimento fluido
             camera.position.x += (targetX - camera.position.x) * 0.1;
             camera.position.y += (targetY - camera.position.y) * 0.1;
             camera.lookAt(0, 0, 0);
 
-            // Rotazione lenta oggetto
             group.rotation.y += 0.005;
-            group.rotation.z += 0.002;
-
+            group.rotation.x += 0.005;
+            
             renderer.render(scene, camera);
         }
 
+        // Gestione Resize e Avvio
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        animate();
+        document.getElementById('start-btn').addEventListener('click', startCamera);
+        
+        animate(); // Avvia il rendering 3D subito (anche senza camera)
     </script>
 </body>
 </html>
