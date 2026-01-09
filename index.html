@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Face-Tracked 3D Projection</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        
+        /* The 3D Scene */
+        #output_canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1;
+        }
+
+        /* Debug View (Small video in corner) */
+        .debug-container {
+            position: absolute;
+            bottom: 20px; right: 20px;
+            width: 160px; height: 120px;
+            z-index: 2;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            overflow: hidden;
+            opacity: 0.7;
+        }
+        #input_video {
+            width: 100%; height: 100%;
+            transform: scaleX(-1); /* Mirror the local video for natural feel */
+            object-fit: cover;
+        }
+        
+        /* Loading Overlay */
+        #loading {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: sans-serif; font-size: 1.5rem;
+            z-index: 10; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">Loading AI Models...</div>
+
+    <canvas id="output_canvas"></canvas>
+
+    <div class="debug-container">
+        <video id="input_video" playsinline></video>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+        import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/+esm';
+        import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1632432244/+esm';
+
+        // --- Configuration ---
+        const SENSITIVITY_X = 5.0; // Multiplier for head horizontal movement
+        const SENSITIVITY_Y = 3.0; // Multiplier for head vertical movement
+        const SENSITIVITY_Z = 3.0; // Multiplier for depth (leaning in/out)
+        
+        // --- Three.js Setup (The Virtual World) ---
+        const canvas = document.getElementById('output_canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+        
+        // Add Fog for depth perception
+        scene.fog = new THREE.Fog(0x1a1a1a, 5, 20);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        
+        const pointLight = new THREE.PointLight(0xff0055, 50); // Reddish light
+        pointLight.position.set(2, 2, 2);
+        scene.add(pointLight);
+        
+        const blueLight = new THREE.PointLight(0x0055ff, 50); // Blueish light
+        blueLight.position.set(-2, -2, 2);
+        scene.add(blueLight);
+
+        // The Object: A wireframe "Hypercube" structure
+        const geometry = new THREE.BoxGeometry(2, 2, 2);
+        // Create an inner glowing cube
+        const material = new THREE.MeshStandardMaterial({ 
+            color: 0x444444, 
+            roughness: 0.1, 
+            metalness: 0.8 
+        });
+        const cube = new THREE.Mesh(geometry, material);
+        
+        // Add a wireframe box around it to emphasize parallax
+        const wireGeo = new THREE.BoxGeometry(3, 3, 3);
+        const wireMat = new THREE.LineBasicMaterial({ color: 0x00ffcc });
+        const wireframe = new THREE.LineSegments(
+            new THREE.WireframeGeometry(wireGeo), wireMat
+        );
+        
+        // Group them
+        const group = new THREE.Group();
+        group.add(cube);
+        group.add(wireframe);
+        scene.add(group);
+
+        // Add a "Room" grid to help see perspective
+        const gridHelper = new THREE.GridHelper(20, 20, 0x555555, 0x222222);
+        gridHelper.position.y = -3;
+        scene.add(gridHelper);
+
+        // The Camera
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 8; // Default distance
+
+        // --- Tracking Logic State ---
+        let targetX = 0;
+        let targetY = 0;
+        let targetZ = 8; // Default Z
+        
+        // --- MediaPipe Setup ---
+        const videoElement = document.getElementById('input_video');
+        
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+
+                // Landmark 1 is usually the nose tip
+                const nose = landmarks[1]; 
+                
+                // 1. Calculate X Position
+                // MediaPipe X is 0 (left) to 1 (right). 
+                // We shift it to -0.5 to 0.5.
+                // We NEGATE it because if head moves right, camera must move right.
+                // But in 3D, camera moving right makes objects shift left.
+                // For a "window" effect:
+                // If I move right (x > 0.5), I should see the LEFT side of the cube.
+                // This means the camera physically moves to the right (+x).
+                let x = (nose.x - 0.5); 
+                let y = (nose.y - 0.5);
+                
+                // Update Targets with sensitivity
+                // Note: We invert X here to mirror the user's movement naturally
+                targetX = -x * SENSITIVITY_X; 
+                targetY = -y * SENSITIVITY_Y;
+                
+                // Depth (Z) - Crude approximation based on face size or z-coordinate
+                // nose.z is relative to the head center. 
+                // A better depth approximation is looking at the distance between eyes, 
+                // but for simplicity, we'll map the raw Z coordinate or leave it fixed 
+                // if it's too jittery. Let's try simple Z mapping:
+                // MediaPipe Z is roughly -0.1 (close) to 0.1 (far) relative to image plane
+                // We add it to our base distance.
+                targetZ = 8 + (nose.z * SENSITIVITY_Z * 10); 
+            }
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+        
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        faceMesh.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        cameraFeed.start();
+
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Smoothly interpolate camera position (Linear Interpolation)
+            // This prevents jitter from raw detection data
+            camera.position.x += (targetX - camera.position.x) * 0.1;
+            camera.position.y += (targetY - camera.position.y) * 0.1;
+            camera.position.z += (targetZ - camera.position.z) * 0.1;
+
+            // 2. Look at center
+            camera.lookAt(0, 0, 0);
+
+            // 3. Rotate object slightly for flair
+            group.rotation.y += 0.005;
+            group.rotation.x += 0.002;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
